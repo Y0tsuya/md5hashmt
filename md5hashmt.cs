@@ -10,6 +10,7 @@
 // v1.0.5	Change skip to match
 // v1.0.6	Change time display to show days
 // v1.0.7	Fix directory displayed in progress column during compute
+// v1.0.8	Add event wait handle for ComputeMT
 
 using System;
 using System.Collections.Generic;
@@ -318,7 +319,7 @@ class ProgressPrinter {
 namespace md5hashmt {
 	public class md5hashmt {
 
-		static string version = "v1.0.7";
+		static string version = "v1.0.8";
 		static string GuiHeader =
 @"╔═════════╦═══════════════════════════════════════╦═════════╦════════════╦══════════════════╗
 ║ Project ║                                       ║ Elapsed ║            ║ md5hashmt v1.0.0 ║
@@ -751,7 +752,7 @@ namespace md5hashmt {
 
 		static void CleanExit() {
 			runtimeStatus = Status.Error;
-			totaltime.Stop();
+			if (totaltime != null) totaltime.Stop();
 			Notify(runtimeStatus);
 			System.Console.ResetColor();
 			//			Console.OutputEncoding = System.Text.Encoding.Default;
@@ -1027,6 +1028,8 @@ namespace md5hashmt {
 			}
 		}
 
+		static EventWaitHandle WaitComputeLaunch;
+
 		static void LaunchComputeMT() {
 			int i;
 			bool IsAlive;
@@ -1034,6 +1037,7 @@ namespace md5hashmt {
 			Thread[] computeThreads;
 			XYConsole.XYStringParam[] pathXY = new XYConsole.XYStringParam[MaxThreads];
 			XYConsole.XYStringParam[] progXY = new XYConsole.XYStringParam[MaxThreads];
+			WaitComputeLaunch = new AutoResetEvent(false);
 
 			start = DateTime.Now;
 			computeThreads = new Thread[MaxThreads];
@@ -1045,7 +1049,8 @@ namespace md5hashmt {
 				computeThreads[i] = new Thread(() => ComputeMT(pathXY[i], progXY[i]));
 				computeThreads[i].Name = i.ToString();
 				computeThreads[i].Start();
-				Thread.Sleep(100);
+				WaitComputeLaunch.WaitOne();
+				//Thread.Sleep(100);
 			}
 			IsAlive = true;
 			while (IsAlive) {
@@ -1065,6 +1070,7 @@ namespace md5hashmt {
 			ScanMTParams Params;
 			int myIndex;
 
+			WaitComputeLaunch.Set();
 			while (true) {
 				if (exitRequested) return;
 				lock (paramLock) {
