@@ -10,7 +10,7 @@
 // v1.0.5	Change skip to match
 // v1.0.6	Change time display to show days
 // v1.0.7	Fix directory displayed in progress column during compute
-// v1.0.8	Add event wait handle for ComputeMT
+// v1.0.8	Use event wait handle for ComputeMT instead of sleep
 
 using System;
 using System.Collections.Generic;
