@@ -11,6 +11,8 @@
 // v1.0.6	Change time display to show days
 // v1.0.7	Fix directory displayed in progress column during compute
 // v1.0.8	Use event wait handle for ComputeMT instead of sleep
+// v1.0.9	Change Compute mode to Verify
+//			Support very long pathnames
 
 using System;
 using System.Collections.Generic;
@@ -26,6 +28,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.Runtime.Serialization;
+using System.Reflection;
 
 public class MD5Alpha {
 	[DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
@@ -87,7 +90,7 @@ public class MD5Alpha {
 		uint handle = 0;
 
 		try {
-			handle = CreateFileW(filename + ":md5", GENERIC_READ, FILE_SHARE_READ, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
+			handle = CreateFileW(@"\\?\" + filename + ":md5", GENERIC_READ, FILE_SHARE_READ, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
 		} catch (Exception ex) {
 			string buf = ex.Message;
 			return null;
@@ -155,7 +158,8 @@ public class MD5Alpha {
 		WriteFile(handle, hash, 16, out byteswritten, IntPtr.Zero);
 		CloseHandle(handle);
 		Alphaleonis.Win32.Filesystem.File.SetLastWriteTime(filename, modify);
-		return true;
+		if (byteswritten == 16) return true;
+		else return false;
 	}
 
 	public bool Detach(string filename) {
@@ -319,7 +323,7 @@ class ProgressPrinter {
 namespace md5hashmt {
 	public class md5hashmt {
 
-		static string version = "v1.0.8";
+		static string version = ParseVersion(); //"v1.0.9";
 		static string GuiHeader =
 @"╔═════════╦═══════════════════════════════════════╦═════════╦════════════╦══════════════════╗
 ║ Project ║                                       ║ Elapsed ║            ║ md5hashmt v1.0.0 ║
@@ -335,7 +339,7 @@ namespace md5hashmt {
 		enum ProjectMode { Seek, Path, Match, Parameter, Network, Log };
 		enum Status { Success, Warning, Error };
 		[Serializable]
-		enum OperatingMode { Scan, Calculate, Attach };
+		enum OperatingMode { Scan, Verify, Attach };
 
 		public class FileListItem {
 			public string Path;
@@ -410,6 +414,13 @@ namespace md5hashmt {
 				logbody += msg + "\r\n";
 				System.Console.ResetColor();
 			}
+		}
+
+		static string ParseVersion() {
+			Assembly execAssembly = Assembly.GetCallingAssembly();
+			AssemblyName name = execAssembly.GetName();
+			string ver = String.Format("{0}.{1}.{2}", name.Version.Major.ToString(), name.Version.Minor.ToString(), name.Version.Build.ToString());
+			return ver;
 		}
 
 		static string MakeLongPath(string path) {
@@ -819,8 +830,9 @@ namespace md5hashmt {
 
 		static void PrintHelp() {
 			myXYConsole.AddLog("md5hashmt " + version + " - (C)2020 Bo-Yi Lin", ConsoleColor.Red);
-			myXYConsole.AddLog("syntax: md5hashmt -p [prjpath] -l verbosity", ConsoleColor.Red);
+			myXYConsole.AddLog("syntax: md5hashmt -p [prjpath] -m [mode] -l verbosity", ConsoleColor.Red);
 			myXYConsole.AddLog("verbosity: INFO, WARNING, ERROR", ConsoleColor.Red);
+			myXYConsole.AddLog("mode: SCAN, CALCULATE, ATTACH", ConsoleColor.Red);
 		}
 
 		static void PrintTime() {
@@ -1098,22 +1110,28 @@ namespace md5hashmt {
 				if (exitRequested) return;
 				if (fileList[i].StoredHash == null) {
 					if (opMode == OperatingMode.Attach) {
-						LogMessage("[INFO] " + fileList[i].Path + " MD5 Attach");
 						fileList[i].ComputedHash = myMD5.Generate(fileList[i].Path);
-						myMD5.Attach(fileList[i].Path, fileList[i].ComputedHash);
+						if (myMD5.Attach(fileList[i].Path, fileList[i].ComputedHash)) {
+							LogMessage("[INFO] " + fileList[i].Path + " MD5 Attach");
+						} else {
+							LogMessage("[WARNING] " + fileList[i].Path + " MD5 Attach Failed");
+						}
 					} else {
 						LogMessage("[INFO] " + fileList[i].Path + " No MD5");
 					}
 				} else if (fileList[i].StoredHash.SequenceEqual(zeroes)) {
 					if (opMode == OperatingMode.Attach) {
-						LogMessage("[INFO] " + fileList[i].Path + " MD5 Recompute");
 						fileList[i].ComputedHash = myMD5.Generate(fileList[i].Path);
 						myMD5.Detach(fileList[i].Path);
-						myMD5.Attach(fileList[i].Path, fileList[i].ComputedHash);
+						if (myMD5.Attach(fileList[i].Path, fileList[i].ComputedHash)) {
+							LogMessage("[INFO] " + fileList[i].Path + " MD5 Recompute");
+						} else {
+							LogMessage("[WARNING] " + fileList[i].Path + " MD5 Attach Failed");
+						}
 					} else {
 						LogMessage("[WARNING] " + fileList[i].Path + " MD5 Zeros");
 					}
-				} else if (opMode == OperatingMode.Calculate) {
+				} else if (opMode == OperatingMode.Verify) {
 					fileList[i].ComputedHash = myMD5.Generate(fileList[i].Path);
 					if (!fileList[i].StoredHash.SequenceEqual(fileList[i].ComputedHash)) {
 						LogMessage("[WARNING] " + fileList[i].Path + " MD5 Mismatch", MsgType.MSG_WARNING);
@@ -1156,7 +1174,7 @@ namespace md5hashmt {
 				} else if (args[c] == "-m") {
 					switch (args[c + 1].ToLower()) {
 					case "scan": opMode = OperatingMode.Scan; break;
-					case "calulate": opMode = OperatingMode.Calculate; break;
+					case "calulate": opMode = OperatingMode.Verify; break;
 					case "attach": opMode = OperatingMode.Attach; break;
 					default: break;
 					}
