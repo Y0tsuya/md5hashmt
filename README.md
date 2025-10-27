@@ -17,4 +17,6 @@ md5hashmt md5hashmt -p [prjpath] -m [mode] -l verbosity
         WARNING: Warning which will not negatively impact operations, orange/yellow color
         ERROR: File operation error, may require user intervention/verification
 
+```
+
 md5hashmt requires a project file.  The project file specifies the # of CPU threads to use and the list of folders to scan.  For best results, threads should be limited to # of CPU cores on your processor, and folders should reflect individual HDDs.  This way you make maximum use of your CPU cores, and no two threads will access the same HDD which results in thrashing.
