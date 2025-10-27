@@ -1,4 +1,4 @@
-﻿// Revision History
+// Revision History
 // v1.0.0	First release
 // v1.0.1	Add [INFO] [WARNING] to MD5 messages
 //			Allocate extra character to elapsed time
@@ -13,6 +13,19 @@
 // v1.0.8	Use event wait handle for ComputeMT instead of sleep
 // v1.0.9	Change Compute mode to Verify
 //			Support very long pathnames
+// v1.1.0	Handle ComputedHash == null
+// v1.1.1	Add MD5 Null to dump file
+// v1.1.2	Change string concat to StringBuilder
+// v1.1.3	Add count stats
+//			Optional periodic auto-save log (minutes)
+//			Change exit request from Esc -> Shift+Esc
+// v1.1.4	Shorten name if in drivepool
+//			Change dump file logic to avoid null conditions
+// v2.0.0	Migrate to .NET 6
+//			Integrate HashInterop
+//			Remove AlphaFS
+// v2.0.1	Migrate Thread.Abort() to cooperative exit
+// v2.0.2	Break up AutoSaver sleep timer to handle cooperative exit
 
 using System;
 using System.Collections.Generic;
@@ -22,156 +35,13 @@ using System.Text;
 using System.Net;
 using System.Net.Mail;
 using System.Diagnostics;
-//using Delimon.Win32.IO;
 using System.Security.Cryptography;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.Runtime.Serialization;
 using System.Reflection;
-
-public class MD5Alpha {
-	[DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-	static extern uint CreateFileW(string lpFileName, uint dwDesiredAccess, uint dwShareMode, IntPtr SecurityFileAttributes, uint dwCreationDisposition, uint dwFlagAndAttributes, IntPtr hTemplateFile);
-	[DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-	static extern bool DeleteFileW(string lpFileName);
-	[DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-	static extern bool CloseHandle(uint handle);
-	[DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-	static extern bool ReadFile(uint hFile, [Out] byte[] lpBuffer, uint nNumberOfBytesToRead, out uint lpNumberOfBytesRead, IntPtr lpOverlapped);
-	[DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-	static extern int WriteFile(uint hFile, [In] byte[] lpBuffer, uint nNumberOfBytesToWrite, out uint lpNumberOfBytesWritten, IntPtr lpOverlapped);
-
-	public const uint GENERIC_ALL = 0x10000000;
-	public const uint GENERIC_EXECUTE = 0x20000000;
-	public const uint GENERIC_WRITE = 0x40000000;
-	public const uint GENERIC_READ = 0x80000000;
-	public const uint FILE_SHARE_READ = 0x00000001;
-	public const uint FILE_SHARE_WRITE = 0x00000002;
-	public const uint FILE_SHARE_DELETE = 0x00000004;
-	public const uint CREATE_NEW = 1;
-	public const uint CREATE_ALWAYS = 2;
-	public const uint OPEN_EXISTING = 3;
-	public const uint OPEN_ALWAYS = 4;
-	public const uint TRUNCATE_EXISTING = 5;
-	public const int FILE_ATTRIBUTE_NORMAL = 0x80;
-
-	public long minsize = 0, maxsize = long.MaxValue;
-	public string hashString;
-
-	public MD5Alpha() {
-	}
-
-	public string GetHashString(byte[] hash) {
-		if (hash == null) return "";
-		return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
-	}
-
-	public byte[] Generate(string filename) {
-		byte[] hash;
-		string fullpath = Alphaleonis.Win32.Filesystem.Path.GetFullPath(filename);
-
-		try {
-			using (var md5 = MD5.Create()) {
-				using (var stream = Alphaleonis.Win32.Filesystem.File.OpenRead(filename)) {
-					hash = md5.ComputeHash(stream);
-					return hash;
-				}
-			}
-		} catch (IOException ex) {
-			string buf = ex.Message;
-			return null;
-		}
-	}
-
-	public byte[] Read(string filename) {
-		byte[] hash = new byte[16];
-		uint bytesread = 0;
-		uint handle = 0;
-
-		try {
-			handle = CreateFileW(@"\\?\" + filename + ":md5", GENERIC_READ, FILE_SHARE_READ, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
-		} catch (Exception ex) {
-			string buf = ex.Message;
-			return null;
-		}
-		if (handle == 0xFFFFFFFF) { // no MD5
-			return null;
-		}
-		ReadFile(handle, hash, 16, out bytesread, IntPtr.Zero);
-		CloseHandle(handle);
-		return hash;
-	}
-
-	public bool Verify(string filename) {
-		byte[] storedhash = new byte[16];
-		byte[] genhash;
-		uint bytesread = 0;
-		uint handle = 0;
-
-		try {
-			handle = CreateFileW(filename + ":md5", GENERIC_READ, FILE_SHARE_READ, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
-		} catch (Exception ex) {
-			string buf = ex.Message;
-			return false;
-		}
-		if (handle == 0xffffffff) {
-			return false;
-		}
-		ReadFile(handle, storedhash, 16, out bytesread, IntPtr.Zero);
-		CloseHandle(handle);
-		genhash = Generate(filename);
-		if (genhash.SequenceEqual(storedhash)) return true;
-		else return false;
-	}
-
-	public bool Attach(string filename) {
-		uint handle = 0;
-		byte[] genhash;
-
-		try {
-			handle = CreateFileW(filename + ":md5", GENERIC_READ, FILE_SHARE_READ, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
-		} catch (Exception ex) {
-			string buf = ex.Message;
-			return false;
-		}
-		if (handle != 0xFFFFFFFF) {
-			return false;
-		}
-		genhash = Generate(filename);
-		return Attach(filename, genhash);
-	}
-
-	public bool Attach(string filename, byte[] hash) {
-		uint byteswritten = 0;
-		uint handle = 0;
-		DateTime modify;
-
-		modify = Alphaleonis.Win32.Filesystem.File.GetLastWriteTime(filename);
-
-		try {
-			handle = CreateFileW(filename + ":md5", GENERIC_WRITE, FILE_SHARE_WRITE, IntPtr.Zero, OPEN_ALWAYS, 0, IntPtr.Zero);
-		} catch (Exception ex) {
-			string buf = ex.Message;
-			return false;
-		}
-		WriteFile(handle, hash, 16, out byteswritten, IntPtr.Zero);
-		CloseHandle(handle);
-		Alphaleonis.Win32.Filesystem.File.SetLastWriteTime(filename, modify);
-		if (byteswritten == 16) return true;
-		else return false;
-	}
-
-	public bool Detach(string filename) {
-		try {
-			DeleteFileW(filename + ":md5");
-		} catch (Exception ex) {
-			string buf = ex.Message;
-			return false;
-		}
-		return true;
-	}
-}
+using System.Text.RegularExpressions;
 
 public class XYConsole {
 
@@ -320,14 +190,34 @@ class ProgressPrinter {
 	}
 }
 
+public class FileListItem {
+	public string Path;
+	public long Size;
+	public byte[] StoredHash;
+	public byte[] ComputedHash;
+}
+
+public class ScanMTParams {
+	public string Path;
+	public List<FileListItem> FileList;
+
+	public ScanMTParams(string path) {
+		FileList = new List<FileListItem>();
+		Path = path;
+	}
+};
+
+
 namespace md5hashmt {
+
+
 	public class md5hashmt {
 
-		static string version = ParseVersion(); //"v1.0.9";
+		static string Version = ParseVersion(); //"v1.0.9";
 		static string GuiHeader =
-@"╔═════════╦═══════════════════════════════════════╦═════════╦════════════╦══════════════════╗
-║ Project ║                                       ║ Elapsed ║            ║ md5hashmt v1.0.0 ║
-╠═════════╩════════════╦══════════════════════════╩═════════╩════════════╩══════════════════╣";
+@"╔═════════╦═════════════════════════════╦═══════════════════╦═════════╦════════════╦════════╗
+║ Project ║                             ║ 00000000/00000000 ║ Elapsed ║            ║ v1.0.0 ║
+╠═════════╩════════════╦════════════════╩═══════════════════╩═════════╩════════════╩════════╣";
 		static string GuiThreadLine =
 @"║                      ║                                                                    ║";
 		static string GuiSpacer =
@@ -341,47 +231,75 @@ namespace md5hashmt {
 		[Serializable]
 		enum OperatingMode { Scan, Verify, Attach };
 
-		public class FileListItem {
-			public string Path;
-			public long Size;
-			public byte[] StoredHash;
-			public byte[] ComputedHash;
-		}
-
 		static long MinFileSize = 0;
 		static long MaxFileSize = Int64.MaxValue;
 		static int MaxThreads = 1;
 		static int LogLines = 10;
-		static bool network = false;
-		static int netport = 25;
-		static bool ssl = false;
-		static bool log = false;
-		static string netuser = null;
-		static string netpass = null;
-		static string mailserver = null;
-		static string mailfrom = null;
-		static string mailto = null;
-		static string logpath = null;
+		static bool DoNetwork = false;
+		static int NetPort = 25;
+		static bool DoSsl = false;
+		static bool DoLog = false;
+		static string NetUser = null;
+		static string NetPass = null;
+		static string MailServer = null;
+		static string MailFrom = null;
+		static string MailTo = null;
+		static string LogPath = null;
 		static List<string> Roots;
-		static Stopwatch totaltime;
-		static string mailbody;
-		static string logbody;
+		static Stopwatch TotalTime;
+		//static string mailbody;
+		//static string logbody;
+		static StringBuilder MailBuilder = new StringBuilder();
+		static StringBuilder LogBuilder = new StringBuilder();
 		enum MsgType { MSG_INFO, MSG_ALERT, MSG_WARNING, MSG_ERROR };
-		static MsgType msgLevel;
-		static string projectFile = "";
-		static bool attachLog = false;
-		static Status runtimeStatus = Status.Success;
-		static MD5Alpha myMD5 = new MD5Alpha();
-		static XYConsole.XYStringParam ProjectXY = new XYConsole.XYStringParam(12, 1, 37);
-		static XYConsole.XYStringParam VersionXY = new XYConsole.XYStringParam(75, 1, 16);
-		static XYConsole.XYStringParam TotalTimeXY = new XYConsole.XYStringParam(62, 1, 10);
+		static MsgType MsgLevel;
+		static string ProjectFile = "";
+		static bool AttachLog = false;
+		static int AutoSaveInterval = 0;
+		static Status RuntimeStatus = Status.Success;
+		static HashInterop MyMD5 = new HashInterop();
+		static XYConsole.XYStringParam ProjectXY = new XYConsole.XYStringParam(12, 1, 27);
+		static XYConsole.XYStringParam ProgressXY = new XYConsole.XYStringParam(42, 1, 17);
+		static XYConsole.XYStringParam TotalTimeXY = new XYConsole.XYStringParam(72, 1, 10);
+		static XYConsole.XYStringParam VersionXY = new XYConsole.XYStringParam(85, 1, 6);
 		static XYConsole.XYStringParam MessageXY;
-		static XYConsole myXYConsole;
-		static bool exitRequested = false;
-		static bool scanCompleted = false;
+		static XYConsole MyXYConsole;
+		static bool ExitRequested = false;
+		static bool ScanCompleted = false;
 		static List<string> MatchNameList;
 		static bool AlreadyNotified = false;
-		static OperatingMode opMode = OperatingMode.Scan;
+		static OperatingMode OpMode = OperatingMode.Scan;
+		static Thread TimeThread;
+		static Thread AutoSaveThread;
+		static string AutosaveLogFile;
+		static bool AbortThreads;
+
+		public const int LOG_ADD = 0;
+		public const int LOG_SUB = 1;
+		public const int LOG_UPD = 2;
+		public const int LOG_INFO = 0;
+		public const int LOG_ALERT = 1;
+		public const int LOG_WARNING = 2;
+		public const int LOG_ERROR = 3;
+		static int LogCallBackHandler(int op, string msg, int errlvl, int subidx) {
+			MsgType lvl = MsgType.MSG_INFO;
+			switch (errlvl) {
+				case LOG_INFO: lvl = MsgType.MSG_INFO; break;
+				case LOG_ALERT: lvl = MsgType.MSG_ALERT; break;
+				case LOG_WARNING: lvl = MsgType.MSG_WARNING; break;
+				case LOG_ERROR: lvl = MsgType.MSG_ERROR; break;
+				default: lvl = MsgType.MSG_INFO; break;
+			}
+			LogMessage(msg, lvl);
+			return 0;
+		}
+
+		static void ProgressCallBackHandler(int max, int value) {
+		}
+
+		static void DoEventCallbackHandler() {
+			//Write(".");
+		}
 
 		static void TextFgColor(System.ConsoleColor color) {
 			System.Console.ForegroundColor = color;
@@ -401,19 +319,28 @@ namespace md5hashmt {
 
 		static void LogMessage(string msg, MsgType type, bool display) {
 			ConsoleColor color = ConsoleColor.Green;
-			if (type >= msgLevel) {
+			if (type >= MsgLevel) {
 				switch (type) {
-				case MsgType.MSG_INFO: color = ConsoleColor.Green; break;
-				case MsgType.MSG_ALERT: color = ConsoleColor.Cyan; break;
-				case MsgType.MSG_WARNING: color = ConsoleColor.Yellow; break;
-				case MsgType.MSG_ERROR: color = ConsoleColor.Red; break;
-				default: System.Console.ResetColor(); break;
+					case MsgType.MSG_INFO: color = ConsoleColor.Green; break;
+					case MsgType.MSG_ALERT: color = ConsoleColor.Cyan; break;
+					case MsgType.MSG_WARNING: color = ConsoleColor.Yellow; break;
+					case MsgType.MSG_ERROR: color = ConsoleColor.Red; break;
+					default: System.Console.ResetColor(); break;
 				}
-				if (display) myXYConsole.AddLog(msg, color);
-				mailbody += msg + "\r\n";
-				logbody += msg + "\r\n";
+				if (display) MyXYConsole.AddLog(msg, color);
+				MailBuilder.Append(msg + "\r\n");
+				LogBuilder.Append(msg + "\r\n");
 				System.Console.ResetColor();
 			}
+		}
+
+		static string Shorten(string msg, int len) {
+			if (msg.Length < len) return msg;
+			int leftlen = len / 2 - 1;
+			int rightlen = len - leftlen - 1;
+			string left = msg.Substring(0, leftlen);
+			string right = msg.Substring(len - rightlen - 1, rightlen);
+			return left + ".." + right;
 		}
 
 		static string ParseVersion() {
@@ -529,7 +456,7 @@ namespace md5hashmt {
 			string[] tokens;
 			MatchNameList = new List<string>();
 
-			if (!Alphaleonis.Win32.Filesystem.File.Exists(prjpath)) {
+			if (!File.Exists(prjpath)) {
 				LogMessage("[ERROR] Project file " + prjpath + " not found.", MsgType.MSG_ERROR);
 				LogMessage("Exiting...", MsgType.MSG_ERROR);
 				CleanExit();
@@ -549,19 +476,19 @@ namespace md5hashmt {
 					mode = ProjectMode.Parameter;
 				} else if (buf == "[Network]") {
 					mode = ProjectMode.Network;
-					network = true;
+					DoNetwork = true;
 				} else if (buf == "[Log]") {
 					mode = ProjectMode.Log;
-					log = true;
+					DoLog = true;
 				} else if (mode == ProjectMode.Path) {
 					tokens = buf.Split(delims, StringSplitOptions.RemoveEmptyEntries);
 					if (tokens.Count() > 0) {
 						tokens[1] = tokens[1].Trim();
 						switch (tokens[0].ToLower().Trim()) {
-						case "root":
-							Roots.Add(FixRootDir(tokens[1]));
-							break;
-						default: break;
+							case "root":
+								Roots.Add(FixRootDir(tokens[1]));
+								break;
+							default: break;
 						}
 					}
 				} else if (mode == ProjectMode.Match) {
@@ -569,10 +496,10 @@ namespace md5hashmt {
 					if (tokens.Count() > 0) {
 						tokens[1] = tokens[1].Trim();
 						switch (tokens[0].ToLower().Trim()) {
-						case "name":
-							MatchNameList.Add(tokens[1]);
-							break;
-						default: break;
+							case "name":
+								MatchNameList.Add(tokens[1].ToLower());
+								break;
+							default: break;
 						}
 					}
 				} else if (mode == ProjectMode.Parameter) {
@@ -580,19 +507,19 @@ namespace md5hashmt {
 					if (tokens.Count() > 0) {
 						tokens[1] = tokens[1].Trim();
 						switch (tokens[0].ToLower().Trim()) {
-						case "minfilesize":
-							MinFileSize = DecodeByteSize(tokens[1]);
-							break;
-						case "maxfilesize":
-							MaxFileSize = DecodeByteSize(tokens[1]);
-							break;
-						case "maxthreads":
-							MaxThreads = Int32.Parse(tokens[1]);
-							break;
-						case "loglines":
-							LogLines = Int32.Parse(tokens[1]);
-							break;
-						default: break;
+							case "minfilesize":
+								MinFileSize = DecodeByteSize(tokens[1]);
+								break;
+							case "maxfilesize":
+								MaxFileSize = DecodeByteSize(tokens[1]);
+								break;
+							case "maxthreads":
+								MaxThreads = Int32.Parse(tokens[1]);
+								break;
+							case "loglines":
+								LogLines = Int32.Parse(tokens[1]);
+								break;
+							default: break;
 						}
 					}
 				} else if (mode == ProjectMode.Network) {
@@ -600,32 +527,32 @@ namespace md5hashmt {
 					if (tokens.Count() > 0) {
 						tokens[1] = tokens[1].Trim();
 						switch (tokens[0].ToLower().Trim()) {
-						case "to":
-							mailto = tokens[1];
-							break;
-						case "from":
-							mailfrom = tokens[1];
-							break;
-						case "server":
-							mailserver = tokens[1];
-							break;
-						case "port":
-							netport = Convert.ToInt32(tokens[1]);
-							break;
-						case "user":
-							netuser = tokens[1];
-							break;
-						case "pass":
-							netpass = tokens[1];
-							break;
-						case "ssl":
-							if ((tokens[1] == "true") || (tokens[1] == "yes")) {
-								ssl = true;
-							} else {
-								ssl = false;
-							}
-							break;
-						default: break;
+							case "to":
+								MailTo = tokens[1];
+								break;
+							case "from":
+								MailFrom = tokens[1];
+								break;
+							case "server":
+								MailServer = tokens[1];
+								break;
+							case "port":
+								NetPort = Convert.ToInt32(tokens[1]);
+								break;
+							case "user":
+								NetUser = tokens[1];
+								break;
+							case "pass":
+								NetPass = tokens[1];
+								break;
+							case "ssl":
+								if ((tokens[1] == "true") || (tokens[1] == "yes")) {
+									DoSsl = true;
+								} else {
+									DoSsl = false;
+								}
+								break;
+							default: break;
 						}
 					}
 				} else if (mode == ProjectMode.Log) {
@@ -633,15 +560,18 @@ namespace md5hashmt {
 					if (tokens.Count() > 0) {
 						tokens[1] = tokens[1].Trim();
 						switch (tokens[0].ToLower().Trim()) {
-						case "path":
-							logpath = tokens[1];
-							break;
-						case "attach":
-							if (tokens[1].ToLower() == "yes") {
-								attachLog = true;
-							}
-							break;
-						default: break;
+							case "path":
+								LogPath = tokens[1];
+								break;
+							case "attach":
+								if (tokens[1].ToLower() == "yes") {
+									AttachLog = true;
+								}
+								break;
+							case "autosave":
+								AutoSaveInterval = Convert.ToInt32(tokens[1]);
+								break;
+							default: break;
 						}
 					}
 				}
@@ -657,7 +587,7 @@ namespace md5hashmt {
 				CleanExit();
 			}
 			for (i = 0; i < Roots.Count; i++) {
-				if (!Alphaleonis.Win32.Filesystem.Directory.Exists(Roots[i])) {
+				if (!Directory.Exists(Roots[i])) {
 					LogMessage("[ERROR] Root dir not found: " + Roots[i], MsgType.MSG_ERROR);
 					LogMessage("Exiting...", MsgType.MSG_ERROR);
 					CleanExit();
@@ -669,20 +599,20 @@ namespace md5hashmt {
 			for (i = 0; i < MatchNameList.Count; i++) {
 				LogMessage("[MATCH] Name=" + MatchNameList[i]);
 			}
-			LogMessage("[MODE] " + opMode.ToString(), MsgType.MSG_ALERT);
+			LogMessage("[MODE] " + OpMode.ToString(), MsgType.MSG_ALERT);
 			LogMessage("[PARAMETER] MinFileSize=" + MinFileSize, MsgType.MSG_ALERT);
 			LogMessage("[PARAMETER] MaxFileSize=" + MaxFileSize, MsgType.MSG_ALERT);
 			LogMessage("[PARAMETER] MaxThreads=" + MaxThreads, MsgType.MSG_ALERT);
 			LogMessage("[PARAMETER] LogLines=" + LogLines, MsgType.MSG_ALERT);
-			LogMessage("[NETWORK] mailto: " + mailto, MsgType.MSG_ALERT);
-			LogMessage("[NETWORK] mailfrom: " + mailfrom, MsgType.MSG_ALERT);
-			LogMessage("[NETWORK] mailserver: " + mailserver, MsgType.MSG_ALERT);
-			LogMessage("[NETWORK] port: " + netport, MsgType.MSG_ALERT);
-			LogMessage("[NETWORK] userid: " + netuser, MsgType.MSG_ALERT);
-			LogMessage("[NETWORK] passwd: " + netpass, MsgType.MSG_ALERT);
-			LogMessage("[NETWORK] SSL: " + (ssl ? "Yes" : "No"), MsgType.MSG_ALERT);
-			LogMessage("[LOG] path: " + logpath, MsgType.MSG_ALERT);
-			LogMessage("[LOG] attach: " + attachLog, MsgType.MSG_ALERT);
+			LogMessage("[NETWORK] mailto: " + MailTo, MsgType.MSG_ALERT);
+			LogMessage("[NETWORK] mailfrom: " + MailFrom, MsgType.MSG_ALERT);
+			LogMessage("[NETWORK] mailserver: " + MailServer, MsgType.MSG_ALERT);
+			LogMessage("[NETWORK] port: " + NetPort, MsgType.MSG_ALERT);
+			LogMessage("[NETWORK] userid: " + NetUser, MsgType.MSG_ALERT);
+			LogMessage("[NETWORK] passwd: " + NetPass, MsgType.MSG_ALERT);
+			LogMessage("[NETWORK] SSL: " + (DoSsl ? "Yes" : "No"), MsgType.MSG_ALERT);
+			LogMessage("[LOG] path: " + LogPath, MsgType.MSG_ALERT);
+			LogMessage("[LOG] attach: " + AttachLog, MsgType.MSG_ALERT);
 		}
 
 		static void SendMail(string host, int port, bool ssl, string user, string pass, string from, string to, string subject, string body) {
@@ -737,17 +667,22 @@ namespace md5hashmt {
 			try {
 				StreamWriter tw = new StreamWriter(filename);
 				for (i = 0; i < RootList.Count; i++) {
-//					LogMessage("[DUMP] Rootlist#" + i + ", " + RootList[i].FileList.Count + " files");
+					//LogMessage("[DUMP] Rootlist#" + i + ", " + RootList[i].FileList.Count + " files");
 					for (j = 0; j < RootList[i].FileList.Count; j++) {
+						//LogMessage("[DUMP] " + RootList[i].FileList[j].Path);
 						if (RootList[i].FileList[j].StoredHash == null) {
-							tw.WriteLine(RootList[i].FileList[j].Path + "\tNo MD5" + "\t" + myMD5.GetHashString(RootList[i].FileList[j].StoredHash) + "\t" + myMD5.GetHashString(RootList[i].FileList[j].ComputedHash));
+							tw.WriteLine(ShortenPath(RootList[i].FileList[j].Path) + "\tNo MD5" + "\t" + MyMD5.GetHashString(RootList[i].FileList[j].StoredHash) + "\t" + MyMD5.GetHashString(RootList[i].FileList[j].ComputedHash));
 						} else if (RootList[i].FileList[j].StoredHash.SequenceEqual(zeroes)) {
-							tw.WriteLine(RootList[i].FileList[j].Path + "\tMD5 Zeroes" + "\t" + myMD5.GetHashString(RootList[i].FileList[j].StoredHash) + "\t" + myMD5.GetHashString(RootList[i].FileList[j].ComputedHash));
-						} else if (RootList[i].FileList[j].ComputedHash != null) {
+							tw.WriteLine(ShortenPath(RootList[i].FileList[j].Path) + "\tMD5 Zeroes" + "\t" + MyMD5.GetHashString(RootList[i].FileList[j].StoredHash) + "\t" + MyMD5.GetHashString(RootList[i].FileList[j].ComputedHash));
+						} else if ((OpMode == OperatingMode.Verify) && (RootList[i].FileList[j].ComputedHash == null)) {
+							tw.WriteLine(ShortenPath(RootList[i].FileList[j].Path) + "\tMD5 Null" + "\t" + MyMD5.GetHashString(RootList[i].FileList[j].StoredHash));
+						} else if (RootList[i].FileList[j].ComputedHash == null) {
+							// do nothing
+						} else {
 							if (RootList[i].FileList[j].StoredHash.SequenceEqual(RootList[i].FileList[j].ComputedHash)) {
-								tw.WriteLine(RootList[i].FileList[j].Path + "\tMD5 Match" + "\t" + myMD5.GetHashString(RootList[i].FileList[j].StoredHash) + "\t" + myMD5.GetHashString(RootList[i].FileList[j].ComputedHash));
+								tw.WriteLine(ShortenPath(RootList[i].FileList[j].Path) + "\tMD5 Match" + "\t" + MyMD5.GetHashString(RootList[i].FileList[j].StoredHash) + "\t" + MyMD5.GetHashString(RootList[i].FileList[j].ComputedHash));
 							} else {
-								tw.WriteLine(RootList[i].FileList[j].Path + "\tMD5 Mismatch" + "\t" + myMD5.GetHashString(RootList[i].FileList[j].StoredHash) + "\t" + myMD5.GetHashString(RootList[i].FileList[j].ComputedHash));
+								tw.WriteLine(ShortenPath(RootList[i].FileList[j].Path) + "\tMD5 Mismatch" + "\t" + MyMD5.GetHashString(RootList[i].FileList[j].StoredHash) + "\t" + MyMD5.GetHashString(RootList[i].FileList[j].ComputedHash));
 							}
 						}
 					}
@@ -762,13 +697,13 @@ namespace md5hashmt {
 		}
 
 		static void CleanExit() {
-			runtimeStatus = Status.Error;
-			if (totaltime != null) totaltime.Stop();
-			Notify(runtimeStatus);
+			RuntimeStatus = Status.Error;
+			if (TotalTime != null) TotalTime.Stop();
+			Notify(RuntimeStatus);
 			System.Console.ResetColor();
 			//			Console.OutputEncoding = System.Text.Encoding.Default;
-			if (scanCompleted) {
-//				SaveScan(scanFile);
+			if (ScanCompleted) {
+				//				SaveScan(scanFile);
 			}
 			Environment.Exit(1);
 		}
@@ -785,6 +720,8 @@ namespace md5hashmt {
 					}
 				}
 			}
+			//if (match) LogMessage("[MATCH] " + Path.GetFileName(path));
+			//else LogMessage("[NOMATCH] " + Path.GetFileName(path));
 			return match;
 		}
 
@@ -792,32 +729,33 @@ namespace md5hashmt {
 			string logfile, dumpfile;
 			string datepat = @"yyyy-MM-dd HH-mm-ss tt";
 			string status;
-			int i, j;
+			string content;
 
 			if (AlreadyNotified) return;
 			AlreadyNotified = true;
 			switch (statusCode) {
-			case Status.Success: status = " [Success]"; break;
-			case Status.Warning: status = " [Warning]"; break;
-			case Status.Error: status = " [Error]"; break;
-			default: status = " [Success]"; break;
+				case Status.Success: status = " [Success]"; break;
+				case Status.Warning: status = " [Warning]"; break;
+				case Status.Error: status = " [Error]"; break;
+				default: status = " [Success]"; break;
 			}
-			LogMessage("[INFO] Logfile size: " + logbody.Length + " bytes");
-			if (network) {
+			LogMessage("[INFO] Logfile size: " + LogBuilder.Length + " bytes");
+			if (DoNetwork) {
 				LogMessage("[INFO] Sending notification email");
-				if (attachLog) {
-					SendMail(mailserver, netport, ssl, netuser, netpass, mailfrom, mailto, "md5hashmt " + projectFile + status, mailbody);
+				if (AttachLog) {
+					content = MailBuilder.ToString();
 				} else {
-					SendMail(mailserver, netport, ssl, netuser, netpass, mailfrom, mailto, "md5hashmt " + projectFile + status, "See Log File for details");
+					content = "See Log File for details";
 				}
+				SendMail(MailServer, NetPort, DoSsl, NetUser, NetPass, MailFrom, MailTo, "md5hashmt " + ProjectFile + status, content);
 			}
-			if (log) {
-				logfile = logpath + "\\" + Alphaleonis.Win32.Filesystem.Path.GetFileNameWithoutExtension(projectFile) + " " + DateTime.Now.ToString(datepat) + status + ".log";
+			if (DoLog) {
+				logfile = LogPath + "\\" + Path.GetFileNameWithoutExtension(ProjectFile) + " " + DateTime.Now.ToString(datepat) + status + ".log";
 				LogMessage("[INFO] Saving log file " + logfile);
-				SaveLog(logfile, logbody);
+				SaveLog(logfile, LogBuilder.ToString());
 				LogMessage("[INFO] log file saved");
 			}
-			dumpfile = logpath + "\\" + Alphaleonis.Win32.Filesystem.Path.GetFileNameWithoutExtension(projectFile) + " " + DateTime.Now.ToString(datepat) + status + ".dump";
+			dumpfile = LogPath + "\\" + Path.GetFileNameWithoutExtension(ProjectFile) + " " + DateTime.Now.ToString(datepat) + status + ".dump";
 			LogMessage("[INFO] Saving dump file " + dumpfile);
 			SaveDump(dumpfile, RootList);
 			LogMessage("[INFO] dump file saved");
@@ -829,23 +767,45 @@ namespace md5hashmt {
 		}
 
 		static void PrintHelp() {
-			myXYConsole.AddLog("md5hashmt " + version + " - (C)2020 Bo-Yi Lin", ConsoleColor.Red);
-			myXYConsole.AddLog("syntax: md5hashmt -p [prjpath] -m [mode] -l verbosity", ConsoleColor.Red);
-			myXYConsole.AddLog("verbosity: INFO, WARNING, ERROR", ConsoleColor.Red);
-			myXYConsole.AddLog("mode: SCAN, CALCULATE, ATTACH", ConsoleColor.Red);
+			MyXYConsole.AddLog("md5hashmt " + Version + " - (C)2020 Bo-Yi Lin", ConsoleColor.Red);
+			MyXYConsole.AddLog("syntax: md5hashmt -p [prjpath] -m [mode] -l verbosity", ConsoleColor.Red);
+			MyXYConsole.AddLog("verbosity: INFO, WARNING, ERROR", ConsoleColor.Red);
+			MyXYConsole.AddLog("mode: SCAN, VERIFY, ATTACH", ConsoleColor.Red);
 		}
 
 		static void PrintTime() {
-			while (totaltime != null) {
-				myXYConsole.WriteAt(TotalTimeXY, totaltime.Elapsed.ToString("G"), ConsoleColor.Cyan);
+			int processed, total;
+			ConsoleKeyInfo cki;
+			while ((TotalTime != null) && !AbortThreads) {
+				lock (countLock) {
+					processed = ProcessedFiles;
+					total = TotalFiles;
+				}
+				MyXYConsole.WriteAt(TotalTimeXY, TotalTime.Elapsed.ToString("G"), ConsoleColor.Cyan);
+				MyXYConsole.WriteAt(ProgressXY, String.Format("{0,8}/{1,-8}", processed, total), ConsoleColor.Cyan);
 				if (Console.KeyAvailable) {
-					if (Console.ReadKey(false).Key == ConsoleKey.Escape) {
+					cki = Console.ReadKey();
+					if ((cki.Key == ConsoleKey.Escape) && cki.Modifiers.HasFlag(ConsoleModifiers.Shift)) {
 						LogMessage("[WARNING] Exit requested", MsgType.MSG_WARNING);
-						runtimeStatus = Status.Warning;
-						exitRequested = true;
+						RuntimeStatus = Status.Warning;
+						ExitRequested = true;
 					}
 				}
 				Thread.Sleep(250);
+			}
+		}
+
+		static void AutoSaver() {
+			while ((AutoSaveInterval > 0) && !AbortThreads) {
+				LogMessage("[INFO] AutoSaving log file " + AutosaveLogFile);
+				SaveLog(AutosaveLogFile, LogBuilder.ToString());
+				for (int i = 0; i < AutoSaveInterval; i++) {
+					for (int j = 0; j < 60; j++) {
+						Thread.Sleep(1000);
+						if (AbortThreads) break;
+					}
+					if (AbortThreads) break;
+				}
 			}
 		}
 
@@ -890,16 +850,9 @@ namespace md5hashmt {
 		static int ScanIndex, ComputeIndex;
 		static readonly object paramLock = new object();
 		static List<ScanMTParams> RootList;
-
-		public class ScanMTParams {
-			public string Path;
-			public List<FileListItem> FileList;
-
-			public ScanMTParams(string path) {
-				FileList = new List<FileListItem>();
-				Path = path;
-			}
-		};
+		static int TotalFiles = 0;
+		static int ProcessedFiles = 0;
+		static readonly object countLock = new object();
 
 		static void LaunchScanMT() {
 			int i;
@@ -950,17 +903,17 @@ namespace md5hashmt {
 			int myIndex;
 
 			while (true) {
-				if (exitRequested) return;
+				if (ExitRequested) return;
 				lock (paramLock) {
 					myIndex = ScanIndex;
 					if (myIndex >= RootList.Count()) return; // no more to do
 					ScanIndex++;
 				}
 				Params = RootList[myIndex];
-				myXYConsole.WriteAt(pathXY, RightJustify(Params.Path, 20), ConsoleColor.Green);
+				MyXYConsole.WriteAt(pathXY, RightJustify(ShortenPath(Params.Path), 20), ConsoleColor.Green);
 				Scan(Params.Path, Params.Path, pathXY, progXY, Params.FileList);
-				myXYConsole.WriteAt(pathXY, "Idle", ConsoleColor.Green);
-				myXYConsole.WriteAt(progXY, " ", ConsoleColor.Green);
+				MyXYConsole.WriteAt(pathXY, "Idle", ConsoleColor.Green);
+				MyXYConsole.WriteAt(progXY, " ", ConsoleColor.Green);
 			}
 		}
 
@@ -970,34 +923,37 @@ namespace md5hashmt {
 			List<string> dirPaths, filePaths;
 			string dirName, fileName;
 			string child;
-			Alphaleonis.Win32.Filesystem.FileInfo fi = null;
+			FileInfo fi = null;
 			byte[] zeroes = new byte[16];
 
-			if (exitRequested) return;
+			if (ExitRequested) return;
 			dirPaths = null;
 			filePaths = null;
-			myXYConsole.WriteAt(progXY, RightJustify(path, 66), ConsoleColor.Green);
+			MyXYConsole.WriteAt(progXY, RightJustify(ShortenPath(path), 66), ConsoleColor.Green);
 			try {
-				dirPaths = new List<string>(Alphaleonis.Win32.Filesystem.Directory.EnumerateDirectories(path));
+				dirPaths = new List<string>(Directory.EnumerateDirectories(path));
 			} catch (Exception ex) {
-				LogMessage("[ERROR] Cannot list directories in " + path, MsgType.MSG_ERROR);
+				LogMessage("[ERROR] Cannot list directories in " + ShortenPath(path), MsgType.MSG_ERROR);
 				LogMessage("[ERROR] " + ex.Message, MsgType.MSG_ERROR);
 				CleanExit();
 			}
 			try {
-				filePaths = new List<string>(Alphaleonis.Win32.Filesystem.Directory.EnumerateFiles(path));
+				filePaths = new List<string>(Directory.EnumerateFiles(path));
 			} catch (Exception ex) {
-				LogMessage("[ERROR] Cannot list files in " + path, MsgType.MSG_ERROR);
+				LogMessage("[ERROR] Cannot list files in " + ShortenPath(path), MsgType.MSG_ERROR);
 				LogMessage("[ERROR] " + ex.Message, MsgType.MSG_ERROR);
 				CleanExit();
+			}
+			lock (countLock) {
+				TotalFiles += filePaths.Count;
 			}
 			foreach (string dirPath in dirPaths) {
 				dirName = GetFolderName(dirPath);
 				//				LogMessage("[DEBUG] " + dirName);
 				if ((dirName == "$RECYCLE.BIN") | (dirName == "System Volume Information")) {
-					LogMessage("[SKIP] " + dirName);
-				} else if ((Alphaleonis.Win32.Filesystem.File.GetAttributes(path + "\\" + dirName) & System.IO.FileAttributes.ReparsePoint) == System.IO.FileAttributes.ReparsePoint) {
-					LogMessage("[LINK] " + dirName);
+					LogMessage("[SKIP] " + ShortenPath(dirName));
+				} else if ((File.GetAttributes(path + "\\" + dirName) & System.IO.FileAttributes.ReparsePoint) == System.IO.FileAttributes.ReparsePoint) {
+					LogMessage("[LINK] " + ShortenPath(dirName));
 				} else {
 					child = path + "\\" + dirName;
 					Scan(root, child, pathXY, progXY, fileList);
@@ -1005,21 +961,24 @@ namespace md5hashmt {
 			}
 			foreach (string filePath in filePaths) {
 				if (!MatchList(filePath.ToLower(), MatchNameList)) continue;
+				if (ExitRequested) break;
 				System.IO.FileAttributes fileAttributes = System.IO.FileAttributes.Normal;
-
-				fileName = Alphaleonis.Win32.Filesystem.Path.GetFileName(filePath);
+				fileName = Path.GetFileName(filePath);
+				// debug
+				//LogMessage("[DEBUG] scan " + filePath, MsgType.MSG_INFO);
+				// debug
 				try {
-					fileAttributes = Alphaleonis.Win32.Filesystem.File.GetAttributes(filePath);
+					fileAttributes = File.GetAttributes(filePath);
 				} catch (Exception ex) {
 					LogMessage("[WARNING] " + ex.Message, MsgType.MSG_WARNING);
 					continue;
 				}
 				if ((fileAttributes & System.IO.FileAttributes.ReparsePoint) == System.IO.FileAttributes.ReparsePoint) {
-					LogMessage("[LINK] " + filePath);
+					LogMessage("[LINK] " + ShortenPath(filePath));
 				} else {
 					FileListItem item = new FileListItem();
 					try {
-						fi = new Alphaleonis.Win32.Filesystem.FileInfo(filePath);
+						fi = new FileInfo(filePath);
 					} catch (Exception ex) {
 						string buf = ex.Message;
 						LogMessage("[WARNING] " + ex.Message, MsgType.MSG_WARNING);
@@ -1027,17 +986,22 @@ namespace md5hashmt {
 					}
 					if ((fi.Length >= MinFileSize) && (fi.Length < MaxFileSize)) {
 						item.Path = filePath;
-						item.StoredHash = myMD5.Read(filePath);
+						item.StoredHash = MyMD5.Read(filePath);
 						if (item.StoredHash == null) {
-							LogMessage("[WARNING] " + item.Path + " No MD5");
+							LogMessage("[WARNING] " + ShortenPath(item.Path) + " No MD5");
 						} else if (item.StoredHash.SequenceEqual(zeroes)) {
-							LogMessage("[WARNING] " + item.Path + " MD5 Zeroes");
+							LogMessage("[WARNING] " + ShortenPath(item.Path) + " MD5 Zeroes");
 						}
 						item.Size = fi.Length;
 						fileList.Add(item);
 					}
 				}
 			}
+		}
+
+		static string ShortenPath(string filePath) {
+			Regex rgx = new Regex(@"^.*PoolPart.(.*?)\\");
+			return rgx.Replace(filePath, "");
 		}
 
 		static EventWaitHandle WaitComputeLaunch;
@@ -1084,17 +1048,17 @@ namespace md5hashmt {
 
 			WaitComputeLaunch.Set();
 			while (true) {
-				if (exitRequested) return;
+				if (ExitRequested) return;
 				lock (paramLock) {
 					myIndex = ComputeIndex;
 					if (myIndex >= RootList.Count()) return; // no more to do
 					ComputeIndex++;
 				}
 				Params = RootList[myIndex];
-				myXYConsole.WriteAt(pathXY, RightJustify(Params.Path, 20), ConsoleColor.Green);
+				MyXYConsole.WriteAt(pathXY, RightJustify(ShortenPath(Params.Path), 20), ConsoleColor.Green);
 				Compute(Params.Path, Params.Path, pathXY, progXY, Params.FileList);
-				myXYConsole.WriteAt(pathXY, "Idle", ConsoleColor.Green);
-				myXYConsole.WriteAt(progXY, " ", ConsoleColor.Green);
+				MyXYConsole.WriteAt(pathXY, "Idle", ConsoleColor.Green);
+				MyXYConsole.WriteAt(progXY, " ", ConsoleColor.Green);
 			}
 		}
 
@@ -1104,122 +1068,145 @@ namespace md5hashmt {
 			int i, p;
 			byte[] zeroes = new byte[16];
 
-			ProgressPrinter progress = new ProgressPrinter(myXYConsole, progXY, null);
+			ProgressPrinter progress = new ProgressPrinter(MyXYConsole, progXY, null);
 			progress.Start();
 			for (i = 0; i < fileList.Count; i++) {
-				if (exitRequested) return;
+				if (ExitRequested) return;
+				//if (Path.GetExtension(fileList[i].Path) == ".JPG") {
+				//	LogMessage("[DEBUG] scan " + Path.GetFileName(fileList[i].Path), MsgType.MSG_INFO);
+				//}
 				if (fileList[i].StoredHash == null) {
-					if (opMode == OperatingMode.Attach) {
-						fileList[i].ComputedHash = myMD5.Generate(fileList[i].Path);
-						if (myMD5.Attach(fileList[i].Path, fileList[i].ComputedHash)) {
-							LogMessage("[INFO] " + fileList[i].Path + " MD5 Attach");
+					if (OpMode == OperatingMode.Attach) {
+						fileList[i].ComputedHash = MyMD5.Generate(fileList[i].Path);
+						if (MyMD5.Attach(fileList[i].Path, fileList[i].ComputedHash)) {
+							LogMessage("[INFO] " + ShortenPath(fileList[i].Path) + " MD5 Attach");
 						} else {
-							LogMessage("[WARNING] " + fileList[i].Path + " MD5 Attach Failed");
+							LogMessage("[WARNING] " + ShortenPath(fileList[i].Path) + " MD5 Attach Failed");
+							//LogMessage("[EXCEPTION] " + MyMD5.ExceptionError);
 						}
 					} else {
-						LogMessage("[INFO] " + fileList[i].Path + " No MD5");
+						LogMessage("[INFO] " + ShortenPath(fileList[i].Path) + " No MD5");
 					}
 				} else if (fileList[i].StoredHash.SequenceEqual(zeroes)) {
-					if (opMode == OperatingMode.Attach) {
-						fileList[i].ComputedHash = myMD5.Generate(fileList[i].Path);
-						myMD5.Detach(fileList[i].Path);
-						if (myMD5.Attach(fileList[i].Path, fileList[i].ComputedHash)) {
-							LogMessage("[INFO] " + fileList[i].Path + " MD5 Recompute");
+					if (OpMode == OperatingMode.Attach) {
+						fileList[i].ComputedHash = MyMD5.Generate(fileList[i].Path);
+						MyMD5.Detach(fileList[i].Path, true);
+						if (MyMD5.Attach(fileList[i].Path, fileList[i].ComputedHash)) {
+							LogMessage("[INFO] " + ShortenPath(fileList[i].Path) + " MD5 Recompute");
 						} else {
-							LogMessage("[WARNING] " + fileList[i].Path + " MD5 Attach Failed");
+							LogMessage("[WARNING] " + ShortenPath(fileList[i].Path) + " MD5 Attach Failed");
+							//LogMessage("[EXCEPTION] " + MyMD5.ExceptionError);
 						}
 					} else {
-						LogMessage("[WARNING] " + fileList[i].Path + " MD5 Zeros");
+						LogMessage("[WARNING] " + ShortenPath(fileList[i].Path) + " MD5 Zeros");
 					}
-				} else if (opMode == OperatingMode.Verify) {
-					fileList[i].ComputedHash = myMD5.Generate(fileList[i].Path);
-					if (!fileList[i].StoredHash.SequenceEqual(fileList[i].ComputedHash)) {
-						LogMessage("[WARNING] " + fileList[i].Path + " MD5 Mismatch", MsgType.MSG_WARNING);
+				} else if (OpMode == OperatingMode.Verify) {
+					fileList[i].ComputedHash = MyMD5.Generate(fileList[i].Path);
+					if (fileList[i].ComputedHash == null) {
+						LogMessage("[WARNING] " + ShortenPath(fileList[i].Path) + " MD5 Null", MsgType.MSG_WARNING);
+					} else if (!fileList[i].StoredHash.SequenceEqual(fileList[i].ComputedHash)) {
+						LogMessage("[WARNING] " + ShortenPath(fileList[i].Path) + " MD5 Mismatch", MsgType.MSG_WARNING);
 					}
 				}
 				p = (i * 100) / fileList.Count;
 				progress.Print(p);
+				lock (countLock) {
+					ProcessedFiles++;
+				}
 			}
 			progress.Stop();
 		}
 
 		static void Main(string[] args) {
-			int i, argn;
-			Thread timeThread;
+			int i;
 			int c;
 
+			AbortThreads = false;
+			MyMD5.LogCallBack = LogCallBackHandler;
 			MessageXY = new XYConsole.XYStringParam(2, 10, 89);
-			myXYConsole = new XYConsole(20, MessageXY, LogLines);
+			MyXYConsole = new XYConsole(20, MessageXY, LogLines);
 			if (args.Length == 0) {
 				LogMessage("[ERROR] No arguments specified", MsgType.MSG_ERROR, true);
 				PrintHelp();
 				CleanExit();
 			}
-			msgLevel = MsgType.MSG_INFO;
+			MsgLevel = MsgType.MSG_INFO;
 			AppDomain.CurrentDomain.ProcessExit += new EventHandler(OnProcessExit);
 			Console.OutputEncoding = System.Text.Encoding.UTF8;
 			for (c = 0; c < args.Length; c++) {
 				if (args[c] == "-p") {
-					projectFile = args[c + 1];
+					ProjectFile = args[c + 1];
 					c++;
 				} else if (args[c] == "-l") {
 					switch (args[c + 1].ToLower()) {
-					case "info": msgLevel = MsgType.MSG_INFO; break;
-					case "alert": msgLevel = MsgType.MSG_ALERT; break;
-					case "warning": msgLevel = MsgType.MSG_WARNING; break;
-					case "error": msgLevel = MsgType.MSG_ERROR; break;
-					default: break;
+						case "info": MsgLevel = MsgType.MSG_INFO; break;
+						case "alert": MsgLevel = MsgType.MSG_ALERT; break;
+						case "warning": MsgLevel = MsgType.MSG_WARNING; break;
+						case "error": MsgLevel = MsgType.MSG_ERROR; break;
+						default: break;
 					}
 					c++;
 				} else if (args[c] == "-m") {
 					switch (args[c + 1].ToLower()) {
-					case "scan": opMode = OperatingMode.Scan; break;
-					case "calulate": opMode = OperatingMode.Verify; break;
-					case "attach": opMode = OperatingMode.Attach; break;
-					default: break;
+						case "scan": OpMode = OperatingMode.Scan; break;
+						case "verify": OpMode = OperatingMode.Verify; break;
+						case "attach": OpMode = OperatingMode.Attach; break;
+						default: break;
 					}
 				}
 			}
 
-			if (projectFile == "") {
-				myXYConsole.Finish(); totaltime = null;
+			if (ProjectFile == "") {
+				MyXYConsole.Finish(); TotalTime = null;
 				LogMessage("[ERROR] No project file specified", MsgType.MSG_ERROR, true);
 				PrintHelp();
 				CleanExit();
 			}
 			Roots = new List<string>();
-			LoadProject(projectFile);
+			LoadProject(ProjectFile);
 			MessageXY = new XYConsole.XYStringParam(2, 4 + MaxThreads, 89);
-			myXYConsole = new XYConsole(5 + MaxThreads + LogLines, MessageXY, LogLines);
+			MyXYConsole = new XYConsole(5 + MaxThreads + LogLines, MessageXY, LogLines);
 			Console.Clear();
-			myXYConsole.PrintRaw(0, 0, GuiHeader, ConsoleColor.Yellow);
+			MyXYConsole.PrintRaw(0, 0, GuiHeader, ConsoleColor.Yellow);
 			for (i = 0; i < MaxThreads; i++) {
-				myXYConsole.PrintRaw(0, 3 + i, GuiThreadLine, ConsoleColor.Yellow);
+				MyXYConsole.PrintRaw(0, 3 + i, GuiThreadLine, ConsoleColor.Yellow);
 			}
-			myXYConsole.PrintRaw(0, 3 + MaxThreads, GuiSpacer, ConsoleColor.Yellow);
+			MyXYConsole.PrintRaw(0, 3 + MaxThreads, GuiSpacer, ConsoleColor.Yellow);
 			for (i = 0; i < LogLines; i++) {
-				myXYConsole.PrintRaw(0, 4 + MaxThreads + i, GuiLogLine, ConsoleColor.Yellow);
+				MyXYConsole.PrintRaw(0, 4 + MaxThreads + i, GuiLogLine, ConsoleColor.Yellow);
 			}
-			myXYConsole.PrintRaw(0, 4 + MaxThreads + LogLines, GuiFooter, ConsoleColor.Yellow);
-			myXYConsole.WriteAt(VersionXY, "md5hashmt " + version, ConsoleColor.Cyan);
+			MyXYConsole.PrintRaw(0, 4 + MaxThreads + LogLines, GuiFooter, ConsoleColor.Yellow);
+			MyXYConsole.WriteAt(VersionXY, "v" + Version, ConsoleColor.Cyan);
 			CheckProject();
 			RootList = new List<ScanMTParams>();
 			for (i = 0; i < Roots.Count; i++) {
 				ScanMTParams Params = new ScanMTParams(Roots[i]);
 				RootList.Add(Params);
 			}
-			totaltime = new Stopwatch();
-			totaltime.Start();
-			timeThread = new Thread(PrintTime);
-			timeThread.Start();
-			myXYConsole.WriteAt(ProjectXY, projectFile, ConsoleColor.Cyan);
+			TotalTime = new Stopwatch();
+			TotalTime.Start();
+			TimeThread = new Thread(PrintTime);
+			TimeThread.Start();
+			if (DoLog && (AutoSaveInterval > 0)) {
+				AutosaveLogFile = LogPath + "\\" + Path.GetFileNameWithoutExtension(ProjectFile) + " " + DateTime.Now.ToString(@"yyyy-MM-dd HH-mm-ss tt") + "_autosave.log";
+				AutoSaveThread = new Thread(AutoSaver);
+				AutoSaveThread.Start();
+			}
+			MyXYConsole.WriteAt(ProjectXY, ProjectFile, ConsoleColor.Cyan);
 			LaunchScanMT();
 			LaunchComputeMT();
-			timeThread.Abort();
-			Notify(runtimeStatus);
-			totaltime.Stop();
-			totaltime = null;
-			myXYConsole.Finish();
+			AbortThreads = true;
+			//TimeThread.Abort();
+			while (TimeThread.IsAlive) Thread.Sleep(250);
+			if (AutoSaveThread != null) {
+				//AutoSaveThread.Abort();
+				while (AutoSaveThread.IsAlive) Thread.Sleep(250);
+				File.Delete(AutosaveLogFile);
+			}
+			Notify(RuntimeStatus);
+			TotalTime.Stop();
+			TotalTime = null;
+			MyXYConsole.Finish();
 			System.Console.ResetColor();
 		}
 	}
