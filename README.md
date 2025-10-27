@@ -1,5 +1,5 @@
 # md5hashmt
-Multi-threaded version of the basic md5hash
+Multi-threaded version of the basic md5hash, running on command-line console.  Requires .NET 6.0 runtime library.
 
 This is meant to be a companion to md5hashmt.  I use this only a few times a year to sweep the MD5 on my drive pools.
 
@@ -19,4 +19,4 @@ md5hashmt md5hashmt -p [prjpath] -m [mode] -l verbosity
 
 ```
 
-md5hashmt requires a project file.  The project file specifies the # of CPU threads to use and the list of folders to scan.  For best results, threads should be limited to # of CPU cores on your processor, and folders should reflect individual HDDs.  This way you make maximum use of your CPU cores, and no two threads will access the same HDD which results in thrashing.
+md5hashmt requires a project file.  The project file specifies the # of CPU threads to use and the list of folders to scan.  For best results, threads should be limited to # of CPU cores on your processor, and folders should reflect individual HDDs.  This way you make maximum use of your CPU cores, and no two threads will access the same HDD which results in thrashing.  See sample project file for more details.
