@@ -1,7 +1,7 @@
 # md5hashmt
 Multi-threaded version of the basic md5hash, running on command-line console.  Requires .NET 6.0 runtime library.
 
-This is meant to be a companion to md5hashmt.  I use this only a few times a year to sweep the MD5 on my drive pools.
+This is meant to be a companion to md5hash.  I use this only a few times a year to sweep the MD5 on my drive pools.
 
 Run this without arguments to get the commnad-line help.
 
