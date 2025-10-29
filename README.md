@@ -6,7 +6,7 @@ This is meant to be a companion to md5hash.  I use this only a few times a year 
 Run this without arguments to get the commnad-line help.
 
 ```
-md5hashmt md5hashmt -p [prjpath] -m [mode] -l verbosity
+md5hashmt -p [prjpath] -m [mode] -l verbosity
       modes:
           SCAN: Just scan the files to read attached MD5
           VERIFY: Verify all files against its attached MD5
